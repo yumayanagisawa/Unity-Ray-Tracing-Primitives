@@ -11,7 +11,6 @@ Shader "Unlit/Ray-Tracing"
     {
         Tags { "RenderType"="Opaque" }
         LOD 100
-
         Pass
         {
             CGPROGRAM
@@ -415,7 +414,7 @@ Shader "Unlit/Ray-Tracing"
 					abs(iMouse.xy) / _ScreenParams.xy - .5;
 
 				//float4 data = texelFetch(iChannel0, int2(0), 0);
-				float4 pos = (0, 0, 0, 0);
+				float4 pos = float4(0., 0., 0., 0.);
 				//float4 data = tex2Dlod(iChannel0, int2(0, 0), 0, 0);
 				float4 data = tex2Dlod(iChannel0, pos);
 				float numA = round(mo*_ScreenParams.xy);
@@ -433,7 +432,7 @@ Shader "Unlit/Ray-Tracing"
 				//if (all(equal(int2(i.uv.xy * _ScreenParams.xy), int2(0, 0)))) {
 				int2 numC = int2(i.uv.xy * _ScreenParams.xy);
 				int2 numD = int2(0, 0);
-				if (numC == numD) {
+				if (any(numC == numD)) {
 					// Calculate focus plane.
 					float nfpd = worldhit(ro, normalize(float3(.5, 0, -.5) - ro), float2(0, 100), normal).y;
 					return float4(nfpd, mo*_ScreenParams.xy, _ScreenParams.x);
@@ -458,13 +457,62 @@ Shader "Unlit/Ray-Tracing"
 						return float4(col, 1);
 					}
 					else {
-						float4 pos = float4(int2(i.uv.xy * _ScreenParams.xy), 0, 0)
-						return float4(col, 1) + tex2Dlod(iChannl0, pos);
+						float4 pos = float4(int2(i.uv.xy * _ScreenParams.xy), 0, 0);
+						return float4(col, 1) + tex2Dlod(iChannel0, pos);
 					}
 				}
 
             }
             ENDCG
         }
+		GrabPass{"iChannel0"}
+		Pass
+		{
+			CGPROGRAM
+			#pragma vertex vert
+			#pragma fragment frag
+
+			#include "UnityCG.cginc"
+
+			struct appdata
+			{
+				float4 vertex : POSITION;
+				float2 uv : TEXCOORD0;
+			};
+
+			struct v2f
+			{
+				float2 uv : TEXCOORD0;
+				UNITY_FOG_COORDS(1)
+				float4 vertex : SV_POSITION;
+			};
+
+			sampler2D _MainTex;
+			float4 _MainTex_ST;
+			sampler2D iChannel0;
+
+			v2f vert(appdata v)
+			{
+				v2f o;
+				o.vertex = UnityObjectToClipPos(v.vertex);
+				o.uv = TRANSFORM_TEX(v.uv, _MainTex);
+				UNITY_TRANSFER_FOG(o,o.vertex);
+				return o;
+			}
+
+			fixed4 frag(v2f i) : SV_Target
+			{
+				float4 pos = float4(i.uv.xy, 0, 0);
+				float4 data = tex2Dlod(iChannel0, pos); //texelFetch(iChannel0, ivec2(fragCoord), 0);
+				float3 col = data.rgb / data.w;
+
+				// gamma correction
+				col = max(float3(0, 0, 0), col - 0.004);
+				col = (col*(6.2*col + .5)) / (col*(6.2*col + 1.7) + 0.06);
+				return float4(col, 1.0);
+			}
+			ENDCG
+		}
+		GrabPass{"iChannel0"}
     }
 }
