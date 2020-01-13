@@ -11,6 +11,7 @@ Shader "Unlit/Ray-Tracing"
     {
         Tags { "RenderType"="Opaque" }
         LOD 100
+		//GrabPass{"iChannel0"}
         Pass
         {
             CGPROGRAM
@@ -119,10 +120,161 @@ Shader "Unlit/Ray-Tracing"
 				}
 			}
 
+			// Capsule:         https://www.shadertoy.com/view/Xt3SzX
+			float iCapsule(in float3 ro, in float3 rd, in float2 distBound, inout float3 normal,
+				in float3 pa, in float3 pb, in float r) {
+				float3  ba = pb - pa;
+				float3  oa = ro - pa;
+
+				float baba = dot(ba, ba);
+				float bard = dot(ba, rd);
+				float baoa = dot(ba, oa);
+				float rdoa = dot(rd, oa);
+				float oaoa = dot(oa, oa);
+
+				float a = baba - bard * bard;
+				float b = baba * rdoa - baoa * bard;
+				float c = baba * oaoa - baoa * baoa - r * r*baba;
+				float h = b * b - a * c;
+				if (h >= 0.) {
+					float t = (-b - sqrt(h)) / a;
+					float d = MAX_DIST;
+
+					float y = baoa + t * bard;
+
+					// body
+					if (y > 0. && y < baba) {
+						d = t;
+					}
+					else {
+						// caps
+						float3 oc = (y <= 0.) ? oa : ro - pb;
+						b = dot(rd, oc);
+						c = dot(oc, oc) - r * r;
+						h = b * b - c;
+						if (h > 0.0) {
+							d = -b - sqrt(h);
+						}
+					}
+					if (d >= distBound.x && d <= distBound.y) {
+						//float3  
+						pa = ro + rd * d - pa;
+						float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+						normal = (pa - h * ba) / r;
+						return d;
+					}
+				}
+				return MAX_DIST;
+			}
+
+			// Goursat:         https://www.shadertoy.com/view/3lj3DW
+			float cuberoot(float x) { return sign(x)*pow(abs(x), 1.0 / 3.0); }
+
+			float iGoursat(in float3 ro, in float3 rd, in float2 distBound, inout float3 normal,
+				in float ra, float rb) {
+				// hole: x4 + y4 + z4 - (r2^2)·(x2 + y2 + z2) + r1^4 = 0;
+				float ra2 = ra * ra;
+				float rb2 = rb * rb;
+
+				float3 rd2 = rd * rd; float3 rd3 = rd2 * rd;
+				float3 ro2 = ro * ro; float3 ro3 = ro2 * ro;
+
+				float ka = 1.0 / dot(rd2, rd2);
+
+				float k3 = ka * (dot(ro, rd3));
+				float k2 = ka * (dot(ro2, rd2) - rb2 / 6.0);
+				float k1 = ka * (dot(ro3, rd) - rb2 * dot(rd, ro) / 2.0);
+				float k0 = ka * (dot(ro2, ro2) + ra2 * ra2 - rb2 * dot(ro, ro));
+
+				float c2 = k2 - k3 * (k3);
+				float c1 = k1 + k3 * (2.0*k3*k3 - 3.0*k2);
+				float c0 = k0 + k3 * (k3*(c2 + k2)*3.0 - 4.0*k1);
+
+				c0 /= 3.0;
+
+				float Q = c2 * c2 + c0;
+				float R = c2 * c2*c2 - 3.0*c0*c2 + c1 * c1;
+				float h = R * R - Q * Q*Q;
+
+
+				// 2 intersections
+				if (h > 0.0) {
+					h = sqrt(h);
+
+					float s = cuberoot(R + h);
+					float u = cuberoot(R - h);
+
+					float x = s + u + 4.0*c2;
+					float y = s - u;
+
+					float k2 = x * x + y * y*3.0;
+
+					float k = sqrt(k2);
+
+					float d = -0.5*abs(y)*sqrt(6.0 / (k + x))
+						- 2.0*c1*(k + x) / (k2 + x * k)
+						- k3;
+
+					if (d >= distBound.x && d <= distBound.y) {
+						float3 pos = ro + rd * d;
+						normal = normalize(4.0*pos*pos*pos - 2.0*pos*rb*rb);
+						return d;
+					}
+					else {
+						return MAX_DIST;
+					}
+				}
+				else {
+					// 4 intersections
+					float sQ = sqrt(Q);
+					float z = c2 - 2.0*sQ*cos(acos(-R / (sQ*Q)) / 3.0);
+
+					float d1 = z - 3.0*c2;
+					float d2 = z * z - 3.0*c0;
+
+					if (abs(d1) < 1.0e-4) {
+						if (d2 < 0.0) return MAX_DIST;
+						d2 = sqrt(d2);
+					}
+					else {
+						if (d1 < 0.0) return MAX_DIST;
+						d1 = sqrt(d1 / 2.0);
+						d2 = c1 / d1;
+					}
+
+					//----------------------------------
+
+					float h1 = sqrt(d1*d1 - z + d2);
+					float h2 = sqrt(d1*d1 - z - d2);
+					float t1 = -d1 - h1 - k3;
+					float t2 = -d1 + h1 - k3;
+					float t3 = d1 - h2 - k3;
+					float t4 = d1 + h2 - k3;
+
+					if (t2 < 0.0 && t4 < 0.0) return MAX_DIST;
+
+					float result = 1e20;
+					if (t1 > 0.0) result = t1;
+					else if (t2 > 0.0) result = t2;
+					if (t3 > 0.0) result = min(result, t3);
+					else if (t4 > 0.0) result = min(result, t4);
+
+					if (result >= distBound.x && result <= distBound.y) {
+						float3 pos = ro + rd * result;
+						normal = normalize(4.0*pos*pos*pos - 2.0*pos*rb*rb);
+						return result;
+					}
+					else {
+						return MAX_DIST;
+					}
+				}
+			}
+
             struct appdata
             {
                 float4 vertex : POSITION;
                 float2 uv : TEXCOORD0;
+				float4 screenPos : TEXCOORD1;
             };
 
             struct v2f
@@ -130,24 +282,31 @@ Shader "Unlit/Ray-Tracing"
                 float2 uv : TEXCOORD0;
                 UNITY_FOG_COORDS(1)
                 float4 vertex : SV_POSITION;
+				float4 screenPos : TEXCOORD1;
             };
 
             sampler2D _MainTex;
             float4 _MainTex_ST;
 			float iMouseX, iMouseY;
 			float2 iMouse;// = float2(iMouseX, iMouseY);
-			sampler2D iChannel0;
+			//sampler2D iChannel0;
+			Texture2D iChannel0;
 
             v2f vert (appdata v)
             {
-                v2f o;
+                /*v2f o;
                 o.vertex = UnityObjectToClipPos(v.vertex);
                 o.uv = TRANSFORM_TEX(v.uv, _MainTex);
                 UNITY_TRANSFER_FOG(o,o.vertex);
-                return o;
+                return o;*/
+				v2f o;
+				o.vertex = UnityObjectToClipPos(v.vertex);
+				o.uv = TRANSFORM_TEX(v.uv, _MainTex);
+				o.screenPos = ComputeScreenPos(o.vertex);
+				return o;
             }
 
-			#define PATH_LENGTH 122
+			#define PATH_LENGTH 12
 
 			uint baseHash(uint2 p) {
 				p = 1103515245U * ((p >> 1U) ^ (p.yx));
@@ -262,22 +421,25 @@ Shader "Unlit/Ray-Tracing"
 				float3 tmp0, tmp1, d = float3(dist, 0.);
 
 				d = opU(d, iPlane(ro, rd, d.xy, normal, float3(0, 1, 0), 0.), 1.);
-				//d = opU(d, iBox(ro - vec3(1, .250, 0), rd, d.xy, normal, vec3(.25)), 2.);
+				d = opU(d, iBox(ro - float3(0, .250, 0), rd, d.xy, normal, float3(.25, .25, .25)), 2.);
 				d = opU(d, iSphere(ro - float3(0, .250, 0), rd, d.xy, normal, .25), 3.);
+				d = opU(d, iSphere(ro - float3(0, .250, 0), rd, d.xy, normal, 25.), 10.);
+				d = opU(d, iSphere(ro - float3(0, .250, 0), rd, d.xy, normal, 15.), 10.);
+				d = opU(d, iSphere(ro - float3(1.55, .250, 0.6), rd, d.xy, normal, .25), 12.);
 				/*d = opU(d, iCylinder   (ro,                  rd, d.xy, normal, vec3(2.1,.1,-2), vec3(1.9,.5,-1.9), .08 ), 4.);
 				d = opU(d, iCylinder   (ro-vec3( 1,.100,-2), rd, d.xy, normal, vec3(0,0,0), vec3(0,.4,0), .1 ), 5.);
-				d = opU(d, iTorus      (ro-vec3( 0,.250, 1), rd, d.xy, normal, vec2(.2,.05)), 6.);
-				d = opU(d, iCapsule    (ro-vec3( 1,.000,-1), rd, d.xy, normal, vec3(-.1,.1,-.1), vec3(.2,.4,.2), .1), 7.);
-				d = opU(d, iCone       (ro-vec3( 2,.200, 0), rd, d.xy, normal, vec3(.1,0,0), vec3(-.1,.3,.1), .15, .05), 8.);
-				d = opU(d, iRoundedBox (ro-vec3( 0,.250,-2), rd, d.xy, normal, vec3(.15,.125,.15), .045), 9.);
-				d = opU(d, iGoursat    (ro-vec3( 1,.275, 1), rd, d.xy, normal, .16, .2), 10.);
-				d = opU(d, iEllipsoid  (ro-vec3(-1,.300, 0), rd, d.xy, normal, vec3(.2,.25, .05)), 11.);
+				d = opU(d, iTorus      (ro-vec3( 0,.250, 1), rd, d.xy, normal, vec2(.2,.05)), 6.);*/
+				d = opU(d, iCapsule    (ro-float3( 1.6,.000, 0), rd, d.xy, normal, float3(-.1,.1,-.1), float3(.2,.4,.2), .1), 7.);
+				/*d = opU(d, iCone       (ro-vec3( 2,.200, 0), rd, d.xy, normal, vec3(.1,0,0), vec3(-.1,.3,.1), .15, .05), 8.);
+				d = opU(d, iRoundedBox (ro-vec3( 0,.250,-2), rd, d.xy, normal, vec3(.15,.125,.15), .045), 9.);*/
+				d = opU(d, iGoursat    (ro-float3( 1,.275, 0), rd, d.xy, normal, .16, .2), 10.);
+				/*d = opU(d, iEllipsoid  (ro-vec3(-1,.300, 0), rd, d.xy, normal, vec3(.2,.25, .05)), 11.);
 				d = opU(d, iRoundedCone(ro-vec3( 2,.200,-1), rd, d.xy, normal, vec3(.1,0,0), vec3(-.1,.3,.1), 0.15, 0.05), 12.);
-				d = opU(d, iRoundedCone(ro-vec3(-1,.200,-2), rd, d.xy, normal, vec3(0,.3,0), vec3(0,0,0), .1, .2), 13.);
-				d = opU(d, iMesh       (ro-vec3( 2,.090, 1), rd, d.xy, normal), 14.);
-				d = opU(d, iSphere4    (ro-vec3(-1,.275,-1), rd, d.xy, normal, .225), 15.);
+				d = opU(d, iRoundedCone(ro-vec3(-1,.200,-2), rd, d.xy, normal, vec3(0,.3,0), vec3(0,0,0), .1, .2), 13.);*/
+				d = opU(d, iMesh       (ro-float3( 0.3,.090, 0.6), rd, d.xy, normal), 14.);
+				/*d = opU(d, iSphere4    (ro-vec3(-1,.275,-1), rd, d.xy, normal, .225), 15.);
 				*/
-				tmp1 = opU(d, iBox(rotateY(ro - float3(0, .25, -1), 0.78539816339), rotateY(rd, 0.78539816339), d.xy, tmp0, float3(.1, .2, .1)), 16.);
+				tmp1 = opU(d, iBox(rotateY(ro - float3(1.1, .25, -0.8), 0.78539816339), rotateY(rd, 0.78539816339), d.xy, tmp0, float3(.2, .2, .3)), 8.);
 				if (tmp1.y < d.y) {
 					d = tmp1;
 					normal = rotateY(tmp0, -0.78539816339);
@@ -294,9 +456,16 @@ Shader "Unlit/Ray-Tracing"
 				return a + b * cos(6.28318530718*(c*t + d));
 			}
 
-			float checkerBoard(float2 p) {
-				return fmod(floor(p.x) + floor(p.y), 2.);
+			// https://stackoverflow.com/questions/7610631/glsl-mod-vs-hlsl-fmod?rq=1 mod in GLSL is different from fmod in HLSL
+			float mod(float x, float y)
+			{
+				return x - y * floor(x / y);
 			}
+
+			float checkerBoard(float2 p) {
+				return mod(floor(p.x) + floor(p.y), 2.);
+			}
+			
 
 			float3 getSkyColor(float3 rd) {
 				float3 col = lerp(float3(1, 1, 1), float3(.5, .7, 1), .5 + .5*rd.y);
@@ -318,11 +487,11 @@ Shader "Unlit/Ray-Tracing"
 
 			void getMaterialProperties(in float3 pos, in float mat,
 				out float3 albedo, out float type, out float roughness) {
-				albedo = pal(mat*.59996323 + .5, float3(.5, .5, .5), float3(.5, .5, .5), float3(1, 1, 1), float3(0, .1, .2));
+				albedo = pal(mat*.729996323 + .5, float3(.5, .5, .5), float3(.5, .5, .5), float3(1, 1, 1), float3(0, .1, .4));
 
 				if (mat < 1.5) {
 					albedo = float3(.25 + .25*checkerBoard(pos.xz * 5.), .25 + .25*checkerBoard(pos.xz * 5.), .25 + .25*checkerBoard(pos.xz * 5.));
-					roughness = .75 * albedo.x - .15;
+					roughness = .75 *albedo.x - .15;
 					type = METAL;
 				}
 				else {
@@ -406,17 +575,18 @@ Shader "Unlit/Ray-Tracing"
 
             fixed4 frag (v2f i) : SV_Target
             {
+				i.uv.xy = (i.screenPos.xy / i.screenPos.w);
 				iMouse = float2(iMouseX, iMouseY);
 				//bool reset = iFrame == 0;
-				bool reset = _Time.y == 0;
+				bool reset = int(_Time.y) == 0;
 
 				float2 mo = iMouse.xy == float2(0, 0) ? float2(.125, .125) :
 					abs(iMouse.xy) / _ScreenParams.xy - .5;
 
 				//float4 data = texelFetch(iChannel0, int2(0), 0);
-				float4 pos = float4(0., 0., 0., 0.);
+				float4 pos = float4(int2(0, 0), 0, 0);
 				//float4 data = tex2Dlod(iChannel0, int2(0, 0), 0, 0);
-				float4 data = tex2Dlod(iChannel0, pos);
+				float4 data = iChannel0.Load(pos); //tex2Dlod(iChannel0, pos);
 				float numA = round(mo*_ScreenParams.xy);
 				float numB = round(data.yz);
 				if (numA != numB || round(data.w) != round(_ScreenParams.x)) {
@@ -448,17 +618,19 @@ Shader "Unlit/Ray-Tracing"
 					// DOF
 					float3 fp = ro + rd * fpd;
 					//ro = ro + ca * float3(randomInUnitDisk(seed), 0.)*.02;
-					ro = ro + mul(float3(randomInUnitDisk(seed), 0.), ca)*.02;
+					ro = ro + mul(float3(randomInUnitDisk(seed), 0.), ca)*.0005;
 					rd = normalize(fp - ro);
 
 					float3 col = render(ro, rd, seed);
 
 					if (reset) {
 						return float4(col, 1);
+						//return float4(1, 0, 0, 1);
 					}
 					else {
 						float4 pos = float4(int2(i.uv.xy * _ScreenParams.xy), 0, 0);
-						return float4(col, 1) + tex2Dlod(iChannel0, pos);
+						//return float4(col, 1) + tex2Dlod(iChannel0, pos);
+						return float4(col, 1) + iChannel0.Load(pos);
 					}
 				}
 
@@ -478,6 +650,7 @@ Shader "Unlit/Ray-Tracing"
 			{
 				float4 vertex : POSITION;
 				float2 uv : TEXCOORD0;
+				float4 screenPos : TEXCOORD1;
 			};
 
 			struct v2f
@@ -485,34 +658,45 @@ Shader "Unlit/Ray-Tracing"
 				float2 uv : TEXCOORD0;
 				UNITY_FOG_COORDS(1)
 				float4 vertex : SV_POSITION;
+				float4 screenPos : TEXCOORD1;
 			};
 
 			sampler2D _MainTex;
 			float4 _MainTex_ST;
-			sampler2D iChannel0;
+			Texture2D iChannel0;
 
 			v2f vert(appdata v)
 			{
-				v2f o;
+				/*v2f o;
 				o.vertex = UnityObjectToClipPos(v.vertex);
 				o.uv = TRANSFORM_TEX(v.uv, _MainTex);
 				UNITY_TRANSFER_FOG(o,o.vertex);
+				return o;*/
+				v2f o;
+				o.vertex = UnityObjectToClipPos(v.vertex);
+				o.uv = TRANSFORM_TEX(v.uv, _MainTex);
+				o.screenPos = ComputeScreenPos(o.vertex);
 				return o;
 			}
 
 			fixed4 frag(v2f i) : SV_Target
 			{
-				float4 pos = float4(i.uv.xy, 0, 0);
-				float4 data = tex2Dlod(iChannel0, pos); //texelFetch(iChannel0, ivec2(fragCoord), 0);
-				float3 col = data.rgb / data.w;
+				//
+				i.uv.xy = (i.screenPos.xy / i.screenPos.w);
+				//
+				float2 temp = float2(1, 1);
+				float4 pos = float4(int2(i.uv.xy * _ScreenParams.xy), 0, 0);
+				float4 data = iChannel0.Load(pos);// tex2Dlod(iChannel0, pos); //texelFetch(iChannel0, ivec2(fragCoord), 0);
+				float3 col = data.rgb/ data.w;
 
 				// gamma correction
 				col = max(float3(0, 0, 0), col - 0.004);
 				col = (col*(6.2*col + .5)) / (col*(6.2*col + 1.7) + 0.06);
 				return float4(col, 1.0);
+				//return tex2D(iChannel0, i.uv);
 			}
 			ENDCG
 		}
-		GrabPass{"iChannel0"}
+		//GrabPass{"iChannel0"}
     }
 }
